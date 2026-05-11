@@ -1,0 +1,18 @@
+gcc processos.c -o processos
+
+./processos
+
+./processos entradaEscalonador.txt
+
+"int main(int argc, char* argv[])"
+entradaEscalonador.txt
+
+
+os dois
+
+gcc processos.c cfs.c -o processos
+./processos entradaEscalonador.txt
+
+gcc processos.c cfs.c -o processos
+./processos entrada_CFS.txt
+
