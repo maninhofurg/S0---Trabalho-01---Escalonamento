@@ -11,6 +11,8 @@ typedef struct Node {
     int tempo_total_original;
     int prioridade;
     int cor; // 0 para Preto, 1 para Vermelho
+    int ja_executou; // NOVO: Flag para saber se já rodou alguma vez
+    int latencia;    // NOVO: Guarda o valor da latência calculada
     struct Node *esq, *dir, *pai;
 } Node;
 
@@ -20,12 +22,13 @@ typedef struct {
     int criacao;
     int conclusao;
     int exec_total;
+    int latencia;    // NOVO: Repassa a latência para o relatório final
 } Estatistica;
 
 Node *raiz = NULL;
 Node *T_NIL = NULL;
 
-// --- Funções da Árvore (Simplificadas para o trabalho) ---
+// --- Funções da Árvore ---
 
 Node* criar_no(int pid, int tempo, int criacao, int prioridade) {
     Node *novo = (Node*)malloc(sizeof(Node));
@@ -35,12 +38,14 @@ Node* criar_no(int pid, int tempo, int criacao, int prioridade) {
     novo->tempo_total_original = tempo;
     novo->momento_criacao = criacao;
     novo->prioridade = prioridade;
+    novo->ja_executou = 0; // Inicializa a flag como falsa
+    novo->latencia = 0;
     novo->pai = novo->esq = novo->dir = T_NIL;
     novo->cor = 1; // Vermelho
     return novo;
 }
 
-// Função para encontrar o processo com menor vruntime (mais à esquerda)
+// Encontra o processo com menor vruntime (mais à esquerda)
 Node* minimo(Node *no) {
     while (no->esq != T_NIL) no = no->esq;
     return no;
@@ -59,7 +64,6 @@ void remover_no_minimo(Node **raiz_ptr, Node *z) {
     if (x != T_NIL) {
         x->pai = z->pai;
     }
-    // Limpa os ponteiros do nó para ele poder ser reinserido sem bugs
     z->pai = T_NIL;
     z->esq = T_NIL;
     z->dir = T_NIL;
@@ -80,12 +84,12 @@ void inserir_arvore(Node **raiz_ptr, Node *z) {
     else y->dir = z;
 }
 
-// FUNÇÃO NOVA: Imprime a "Fila de Prontos" caminhando pela árvore em ordem
+// Imprime a "Fila de Prontos"
 void imprimir_fila_prontos(Node *n) {
     if (n != T_NIL) {
-        imprimir_fila_prontos(n->esq); // Vai o máximo pra esquerda
-        printf("[PID %d | vr=%.1f] ", n->pid, n->vruntime); // Imprime
-        imprimir_fila_prontos(n->dir); // Vai pra direita
+        imprimir_fila_prontos(n->esq);
+        printf("[PID %d | vr=%.1f] ", n->pid, n->vruntime);
+        imprimir_fila_prontos(n->dir);
     }
 }
 
@@ -101,7 +105,6 @@ void cfs(void *lista_ptr, int num_processos, int quantum, const char *arquivo_sa
     
     ProcBase *processos = (ProcBase*)lista_ptr;
     
-    // Inicialização segura do T_NIL (Nó Nulo da Árvore Rubro-Negra)
     if (T_NIL == NULL) {
         T_NIL = (Node*)malloc(sizeof(Node));
         T_NIL->cor = 0;
@@ -111,8 +114,6 @@ void cfs(void *lista_ptr, int num_processos, int quantum, const char *arquivo_sa
 
     FILE *out = fopen(arquivo_saida, "w");
     Estatistica *stats = malloc(num_processos * sizeof(Estatistica));
-    
-    // ARRAY: Mantém o registro de quem já entrou na fila de prontos
     int *inserido = calloc(num_processos, sizeof(int));
     
     int tempo_atual = 0;
@@ -121,31 +122,29 @@ void cfs(void *lista_ptr, int num_processos, int quantum, const char *arquivo_sa
     printf("Iniciando Escalonamento CFS...\n");
 
     while (processos_concluidos < num_processos) {
-        // Puxa todos os processos criados <= tempo_atual que ainda não entraram
         for (int i = 0; i < num_processos; i++) {
             if (!inserido[i] && processos[i].momento_criacao <= tempo_atual) {
                 inserir_arvore(&raiz, criar_no(processos[i].pid, processos[i].tempo_execucao, 
                                 processos[i].momento_criacao, processos[i].prioridade_bilhetes));
-                inserido[i] = 1; // Marca como inserido
+                inserido[i] = 1;
             }
         }
 
         if (raiz != T_NIL) {
-            // Seleciona o nó mais à esquerda
             Node *atual = minimo(raiz);
-            
-            // Tira ele da árvore temporariamente
             remover_no_minimo(&raiz, atual);
             
-            // IMPRIME A FILA DE PRONTOS AQUI
             printf("\nFila de Prontos aguardando: ");
-            if (raiz == T_NIL) {
-                printf("Vazia");
-            } else {
-                imprimir_fila_prontos(raiz);
-            }
+            if (raiz == T_NIL) printf("Vazia"); else imprimir_fila_prontos(raiz);
             printf("\n");
             
+            // ---> CÁLCULO E IMPRESSÃO DA LATÊNCIA <---
+            if (atual->ja_executou == 0) {
+                atual->latencia = tempo_atual - atual->momento_criacao;
+                atual->ja_executou = 1; // Marca que já rodou a primeira vez
+                printf(">>> ALERTA: PID %d entrou na CPU pela PRIMEIRA VEZ (Latencia registrada: %dms) <<<\n", atual->pid, atual->latencia);
+            }
+
             int tempo_rodar = (atual->tempo_restante < quantum) ? atual->tempo_restante : quantum;
             
             printf("Tempo %d: PID %d na CPU (Restava %dms | Executando %dms)\n", 
@@ -154,33 +153,30 @@ void cfs(void *lista_ptr, int num_processos, int quantum, const char *arquivo_sa
             atual->tempo_restante -= tempo_rodar;
             tempo_atual += tempo_rodar;
             
-            // A prioridade age como peso. Processos com prioridade maior ganham vruntime mais devagar.
             atual->vruntime += (float)tempo_rodar * (100.0 / atual->prioridade);
 
             if (atual->tempo_restante <= 0) {
-                // Fim de vida do processo
                 stats[processos_concluidos].pid = atual->pid;
                 stats[processos_concluidos].criacao = atual->momento_criacao;
                 stats[processos_concluidos].conclusao = tempo_atual;
                 stats[processos_concluidos].exec_total = atual->tempo_total_original;
+                stats[processos_concluidos].latencia = atual->latencia; // Salva a latência final
                 processos_concluidos++;
                 free(atual);
             } else {
-                // Volta para a fila de prontos com o vruntime atualizado
                 inserir_arvore(&raiz, atual);
             }
         } else {
-            // Se a árvore está vazia, o tempo passa até que alguém chegue
             tempo_atual++; 
         }
     }
 
-    // Calcula os relatórios conforme os slides
-    fprintf(out, "PID | Tempo de Turnaround | Tempo em Pronto (Tpronto)\n");
+    // --- NOVO RELATÓRIO INCLUINDO LATÊNCIA ---
+    fprintf(out, "PID | Latencia | Tpronto | Tempo de Turnaround\n");
     for (int i = 0; i < num_processos; i++) {
         int turnaround = stats[i].conclusao - stats[i].criacao;
         int tpronto = turnaround - stats[i].exec_total;
-        fprintf(out, "%d | %d | %d\n", stats[i].pid, turnaround, tpronto);
+        fprintf(out, "%d | %d | %d | %d\n", stats[i].pid, stats[i].latencia, tpronto, turnaround);
     }
 
     fclose(out);
